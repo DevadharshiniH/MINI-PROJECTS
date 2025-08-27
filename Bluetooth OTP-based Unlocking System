@@ -1,0 +1,173 @@
+#include <Keypad.h>
+#include <SoftwareSerial.h> // If using different pins for Bluetooth
+
+// --- Keypad Configuration ---
+const byte ROWS = 4;
+const byte COLS = 4;
+char keys[ROWS][COLS] = {
+  {'1','2','3','A'},
+  {'4','5','6','B'},
+  {'7','8','9','C'},
+  {'*','0','#','D'}
+};
+byte rowPins[ROWS] = {2, 3, 4, 5}; // Connect to the row pins of the keypad
+byte colPins[COLS] = {6, 7, 8, 9}; // Connect to the column pins of the keypad
+Keypad keypad = Keypad( makeKeymap(keys), rowPins, colPins, ROWS, COLS );
+
+// --- Bluetooth Configuration ---
+// Choose ONE of the following depending on your setup:
+
+// 1. Using HARDWARE SERIAL (Pins 0 and 1) - Uncomment these lines
+// Note: This will interfere with uploading new sketches unless you disconnect the Bluetooth module during upload.
+// #define RX_PIN 0
+// #define TX_PIN 1
+// SoftwareSerial bluetoothSerial(RX_PIN, TX_PIN); // Not needed for hardware serial
+
+// 2. Using SOFTWARE SERIAL (Choose other digital pins) - Uncomment these lines and define your pins
+#define RX_PIN 10 // Arduino RX pin connected to Bluetooth TX pin
+#define TX_PIN 11 // Arduino TX pin connected to Bluetooth RX pin
+SoftwareSerial bluetoothSerial(RX_PIN, TX_PIN);
+
+// --- Baud Rate ---
+const long SERIAL_BAUD_RATE = 9600;   // Baud rate for Serial Monitor communication
+const long BLUETOOTH_BAUD_RATE = 9600; // Baud rate for Bluetooth communication
+
+// --- OTP Variables ---
+String generatedOTP = "";
+String enteredOTP = "";
+bool otpRequested = false; // Flag to indicate if OTP generation is requested
+bool otpReceived = false;  // Flag to indicate if OTP has been received (internally generated)
+unsigned long otpTimeout = 30000; // 30 seconds timeout for OTP entry
+unsigned long otpStartTime = 0;
+const int otpLength = 6;       // Length of the generated OTP
+
+// --- Relay Configuration ---
+const int relayPin = 12; // Changed to a different pin to avoid potential conflicts with SoftwareSerial
+const int unlockDuration = 5000; // Duration for which the door stays unlocked (in milliseconds)
+
+// --- Function Prototypes ---
+String generateRandomOTP(int length);
+void sendOTPviaBluetooth(String otp);
+void unlockDoor();
+void lockDoor();
+
+void setup() {
+  Serial.begin(SERIAL_BAUD_RATE);
+  bluetoothSerial.begin(BLUETOOTH_BAUD_RATE);
+
+  pinMode(relayPin, OUTPUT);
+  lockDoor(); // Start with the door locked
+
+  Serial.println("Smart Lock System Initialized");
+  bluetoothSerial.println("Smart Lock System Initialized");
+  Serial.println("Press '#' on the keypad to generate OTP...");
+  bluetoothSerial.println("Press '#' on the keypad to generate OTP...");
+}
+
+void loop() {
+  // Check for keypad input to request OTP generation
+  char key = keypad.getKey();
+
+  if (key == '#') {
+    if (!otpReceived && !otpRequested) {
+      Serial.println("Generating OTP...");
+      bluetoothSerial.println("Generating OTP...");
+      generatedOTP = generateRandomOTP(otpLength);
+      sendOTPviaBluetooth(generatedOTP);
+      Serial.print("Generated OTP: ");
+      Serial.println(generatedOTP);
+      bluetoothSerial.print("Generated OTP: ");
+      bluetoothSerial.println(generatedOTP);
+      enteredOTP = "";
+      otpReceived = true;
+      otpRequested = true;
+      otpStartTime = millis();
+    } else if (otpReceived) {
+      Serial.println("OTP already generated. Enter it on the keypad.");
+      bluetoothSerial.println("OTP already generated. Enter it on the keypad.");
+    } else if (otpRequested) {
+      Serial.println("Waiting for OTP entry...");
+      bluetoothSerial.println("Waiting for OTP entry...");
+    }
+  } else if (otpReceived) {
+    if (key && key != '*' && key != '#' && enteredOTP.length() < otpLength) {
+      enteredOTP += key;
+      Serial.print("Entering OTP: ");
+      Serial.println(enteredOTP);
+      bluetoothSerial.print("Entering OTP: ");
+      bluetoothSerial.println(enteredOTP);
+    } else if (key == '*') {
+      enteredOTP = ""; // Clear entered OTP
+      Serial.println("OTP entry cleared.");
+      bluetoothSerial.println("OTP entry cleared.");
+    }
+  }
+
+  // Check if OTP has been entered completely
+  if (otpReceived && enteredOTP.length() == otpLength) {
+    Serial.print("Entered OTP: ");
+    Serial.println(enteredOTP);
+    bluetoothSerial.print("Entered OTP: ");
+    bluetoothSerial.println(enteredOTP);
+    if (enteredOTP == generatedOTP) {
+      Serial.println("OTP Matched! Unlocking Door.");
+      bluetoothSerial.println("OTP Matched! Unlocking Door.");
+      unlockDoor();
+      delay(unlockDuration);
+      lockDoor();
+      otpReceived = false;
+      otpRequested = false;
+      generatedOTP = "";
+      enteredOTP = "";
+      Serial.println("Press '#' on the keypad to generate OTP...");
+      bluetoothSerial.println("Press '#' on the keypad to generate OTP...");
+    } else {
+      Serial.println("OTP Incorrect!");
+      bluetoothSerial.println("OTP Incorrect!");
+      enteredOTP = ""; // Clear entered OTP for another attempt
+    }
+  }
+
+  // Check for OTP timeout
+  if (otpReceived && (millis() - otpStartTime > otpTimeout)) {
+    Serial.println("OTP Entry Timed Out.");
+    bluetoothSerial.println("OTP Entry Timed Out.");
+    otpReceived = false;
+    otpRequested = false;
+    generatedOTP = "";
+    enteredOTP = "";
+    Serial.println("Press '#' on the keypad to generate OTP...");
+    bluetoothSerial.println("Press '#' on the keypad to generate OTP...");
+  }
+
+  delay(50); // Small delay to prevent excessive CPU usage
+}
+
+// --- Helper Functions ---
+
+String generateRandomOTP(int length) {
+  String otp = "";
+  for (int i = 0; i < length; i++) {
+    otp += String(random(0, 10)); // Generate random digits 0-9
+  }
+  return otp;
+}
+
+void sendOTPviaBluetooth(String otp) {
+  Serial.print("Sending OTP via Bluetooth: ");
+  Serial.println(otp);
+  bluetoothSerial.print("OTP:");
+  bluetoothSerial.println(otp);
+}
+
+void unlockDoor() {
+  digitalWrite(relayPin, LOW); // Assuming HIGH activates the relay for unlock. Adjust if needed.
+  Serial.println("Door Unlocked");
+  bluetoothSerial.println("Door Unlocked");
+}
+
+void lockDoor() {
+  digitalWrite(relayPin, HIGH);  // Assuming LOW deactivates the relay for lock. Adjust if needed.
+  Serial.println("Door Locked");
+  bluetoothSerial.println("Door Locked");
+}
